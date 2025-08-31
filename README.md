@@ -1,7 +1,7 @@
 # traiNNer-redux
 ![redux3](https://github.com/user-attachments/assets/d107b2fc-6b68-4d3e-b08d-82c8231796cb)
 
-##Changes to Master
+## Changes to Master
 - Added "compare_to" function to hsluvloss
 
 ## Overview
