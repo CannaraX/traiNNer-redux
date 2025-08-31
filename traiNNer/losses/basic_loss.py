@@ -276,6 +276,21 @@ class LumaLoss(nn.Module):
 
 @LOSS_REGISTRY.register()
 class HSLuvLoss(nn.Module):
+    """
+    HSLuv-based color loss with optional comparison target.
+
+    Args:
+        loss_weight (float): Loss weight (handled by caller).
+        hue_weight (float): Weight for hue component.
+        saturation_weight (float): Weight for saturation component.
+        lightness_weight (float): Weight for lightness component.
+        criterion (str): 'l1' | 'l2' | 'charbonnier' (applied to saturation/lightness).
+        downscale_factor (int): If > 1, downscales both inputs before computing loss.
+        compare_to (str): 'gt' (default) compares SR vs GT; 'lq' compares SR vs LQ (upscaled to SR size).
+                          When 'lq' is used, pass the low-resolution image as the second argument `y`
+                          and it will be internally resized to match `x`.
+    """
+
     def __init__(
         self,
         loss_weight: float,
@@ -284,6 +299,7 @@ class HSLuvLoss(nn.Module):
         lightness_weight: float = 1 / 3,
         criterion: str = "l1",
         downscale_factor: int = 1,
+        compare_to: str = "gt",
     ) -> None:
         super().__init__()
         self.downscale_factor = downscale_factor
@@ -292,6 +308,9 @@ class HSLuvLoss(nn.Module):
         self.lightness_weight = lightness_weight
         self.saturation_weight = saturation_weight
         self.criterion_type = criterion
+        self.compare_to = compare_to.lower()
+        if self.compare_to not in ("gt", "lq"):
+            raise ValueError("compare_to must be either 'gt' or 'lq'.")
 
         if self.criterion_type == "l1":
             self.criterion = nn.L1Loss(reduction="none")
@@ -301,6 +320,20 @@ class HSLuvLoss(nn.Module):
             self.criterion = CharbonnierLoss(loss_weight=1.0, reduction="none")
         else:
             raise NotImplementedError(f"{criterion} criterion has not been supported.")
+
+    def _prepare_pair(self, x: Tensor, y: Tensor) -> tuple[Tensor, Tensor]:
+        """
+        Ensures the comparison pair (x, y) are aligned according to `compare_to`.
+        If compare_to == 'lq', assumes y is the LQ image and upsamples it to match x.
+        """
+        if self.compare_to == "lq":
+            # if shapes already match, leave as is; otherwise upsample y to x
+            if y.shape[-2:] != x.shape[-2:]:
+                # Derive scale from shapes if possible; otherwise fall back to direct size
+                h, w = x.shape[-2:]
+                y = F.interpolate(y, size=(h, w), mode="bicubic", antialias=True)
+            y = y.clamp(0, 1)
+        return x, y
 
     def forward_once(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         if self.downscale_factor > 1:
@@ -326,6 +359,9 @@ class HSLuvLoss(nn.Module):
 
     @torch.amp.custom_fwd(cast_inputs=torch.float32, device_type="cuda")  # pyright: ignore[reportPrivateImportUsage] # https://github.com/pytorch/pytorch/issues/131765
     def forward(self, x: Tensor, y: Tensor) -> dict[str, Tensor]:
+        # Optionally reinterpret y as LQ and resize to x
+        x, y = self._prepare_pair(x, y)
+
         x_hue, x_saturation, x_lightness = self.forward_once(x)
         y_hue, y_saturation, y_lightness = self.forward_once(y)
 
@@ -372,3 +408,4 @@ class HSLuvLoss(nn.Module):
             "saturation": saturation_loss,
             "lightness": lightness_loss,
         }
+
